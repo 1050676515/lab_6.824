@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -183,12 +184,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	fmt.Println("-args.term: ", args.Term, " args.Server: ", args.ServerIndex, " term: ", rf.term, " server: ", rf.me)
 	rf.mu.Lock()
 	defer func() {
 		rf.mu.Unlock()
 		rf.timerChan <- reply.Result
 	}()
-
+	fmt.Println("---args.term: ", args.Term, " args.Server: ", args.ServerIndex, " term: ", rf.term, " server: ", rf.me)
 	num := len(rf.entries)
 	maxLogIndex := -1
 	maxLogTerm := -1
@@ -340,15 +342,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) startFollower() {
+	fmt.Println("startFollow1 ---- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Println("startFollow2 -----", rf.me)
 	rf.role = FOLLOWER
 	rf.startFollowerLoop()
 }
 
 func (rf *Raft) startFollowerLoop() {
 
-	ms := time.Duration(rand.Intn(400) + 600)
+	ms := time.Duration(rand.Intn(300) + 300)
 	go func() {
 		t := time.NewTimer(ms * time.Millisecond)
 		flag := 0
@@ -358,7 +362,7 @@ func (rf *Raft) startFollowerLoop() {
 			case <-t.C:
 				if flag > 0 {
 					flag = 0
-					ms := time.Duration(rand.Intn(400) + 600)
+					ms := time.Duration(rand.Intn(300) + 300)
 					t.Reset(ms * time.Millisecond)
 				} else {
 					rf.startElection()
@@ -382,8 +386,10 @@ func (rf *Raft) startFollowerLoop() {
 }
 
 func (rf *Raft) startElection() {
+	fmt.Println("startElec1 ----- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Println("startElec2 ----- ", rf.me)
 	rf.term += 1
 	rf.role = CANDIDATE
 	rf.votedFor = rf.me
@@ -407,6 +413,7 @@ func (rf *Raft) startElection() {
 		var vote int32
 		vote = 1
 		var wg sync.WaitGroup
+		//		start := time.Now().UnixNano()
 		for index, _ := range rf.peers {
 			if index != rf.me {
 				wg.Add(1)
@@ -418,25 +425,49 @@ func (rf *Raft) startElection() {
 						if v == int32(needVote) {
 							voteChan <- term
 						}
-						//						if atomic.LoadInt32(&vote) == int32(needVote) {
-						//							voteChan <- term
-						//						}
 					}
 					wg.Done()
 				}(index)
 			}
 		}
-		wg.Wait()
+		ch := make(chan bool, 1)
+		go func() {
+			wg.Wait()
+			ch <- true
+		}()
+		ms := time.Duration(rand.Intn(1000))
+		t := time.NewTimer(ms * time.Millisecond)
+		defer t.Stop()
+	ForEnd:
+		for {
+			select {
+			case <-ch:
+				if vote >= int32(needVote) {
+					break ForEnd
+				}
+			case <-t.C:
+				voteChan <- -1
+			}
+		}
+		//		wg.Wait()
+		//		end := time.Now().UnixNano()
 		//		rf.mu.Lock()
 		//		defer rf.mu.Unlock()
 		//		if rf.term == term && rf.role == CANDIDATE && vote >= int32(needVote) {
 		//			voteChan <- term
 		//		} else {
-		if vote < int32(needVote) {
-			ms := time.Duration(rand.Intn(300))
-			time.Sleep(ms * time.Millisecond)
-			voteChan <- -1
-		}
+		//		fmt.Println("---time sum: ", (end-start)/1e6)
+		//		if vote < int32(needVote) {
+		//			fmt.Println("--------------------------------------------time sum1: ", (end-start)/1e6)
+		//			ms = ms - (end-start)/1e6
+		//			if ms < 0 {
+		//				ms = 0
+		//			}
+		//			time.Sleep(time.Duration(ms) * time.Millisecond)
+		//			fmt.Println("----------------------------------------------newelec1")
+		//			voteChan <- -1
+		//			fmt.Println("----------------------------------------------newelec2")
+		//		}
 	}(voteChan, len(rf.peers)/2+1, rf.term)
 	rf.startElectionLoop(voteChan)
 }
@@ -452,17 +483,10 @@ func (rf *Raft) getMaxLogIndex() int {
 
 func (rf *Raft) startElectionLoop(voteChan <-chan int) {
 	go func() {
-		//		ms := time.Duration(rand.Intn(400) + 400)
-		//		t := time.NewTimer(ms * time.Millisecond)
 	ForEnd:
 		for {
 			select {
-			//			case <-t.C:
-			// 选举超时，无人当选，立即开始下一轮选举
-			//				rf.startElection()
-			//				break ForEnd
 			case <-rf.exitChan:
-				//				t.Stop()
 				break ForEnd
 			case term := <-voteChan:
 				rf.mu.Lock()
@@ -470,7 +494,6 @@ func (rf *Raft) startElectionLoop(voteChan <-chan int) {
 					// 当选成功
 					rf.mu.Unlock()
 					rf.startLeader()
-					//					t.Stop()
 					break ForEnd
 				} else if term == -1 {
 					rf.mu.Unlock()
@@ -482,7 +505,6 @@ func (rf *Raft) startElectionLoop(voteChan <-chan int) {
 			case res := <-rf.timerChan:
 				// 选举过期
 				if res {
-					//					t.Stop()
 					// 转换为follower
 					rf.startFollower()
 					break ForEnd
@@ -493,8 +515,10 @@ func (rf *Raft) startElectionLoop(voteChan <-chan int) {
 }
 
 func (rf *Raft) startLeader() {
+	fmt.Println("startLeader1 ----- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Println("startLeader2 ----- ", rf.me)
 	rf.role = LEADER
 	nextIndex := rf.getMaxLogIndex()
 	for i, _ := range rf.peers {
