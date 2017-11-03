@@ -189,13 +189,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.mu.Unlock()
 		rf.timerChan <- reply.Result
 	}()
-	num := len(rf.entries)
-	maxLogIndex := -1
-	maxLogTerm := -1
-	if num > 0 {
-		maxLogIndex = rf.entries[num-1].Index
-		maxLogTerm = rf.entries[num-1].Term
-	}
+	maxLogTerm, maxLogIndex := rf.getMaxLog()
+
 	if args.Term > rf.term {
 		rf.term = args.Term
 		rf.role = FOLLOWER
@@ -391,15 +386,7 @@ func (rf *Raft) startElection() {
 	args := new(RequestVoteArgs)
 	args.Term = rf.term
 	args.ServerIndex = rf.me
-	num := len(rf.entries)
-	if num > 0 {
-		args.LastLogTerm = rf.entries[num-1].Term
-		args.LastLogIndex = rf.entries[num-1].Index
-	} else {
-		// 表示空日志
-		args.LastLogTerm = -1
-		args.LastLogIndex = -1
-	}
+	args.LastLogTerm, args.LastLogIndex = rf.getMaxLog()
 
 	voteChan := make(chan int, 1)
 	// 给所有服务器发送RequestVoteRPC
@@ -466,12 +453,12 @@ func (rf *Raft) startElection() {
 	rf.startElectionLoop(voteChan)
 }
 
-func (rf *Raft) getMaxLogIndex() int {
+func (rf *Raft) getMaxLog() (int, int) {
 	num := len(rf.entries)
 	if num == 0 {
-		return -1
+		return -1, -1
 	} else {
-		return rf.entries[num-1].Index
+		return rf.entries[num-1].Term, rf.entries[num-1].Index
 	}
 }
 
@@ -512,9 +499,9 @@ func (rf *Raft) startLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.role = LEADER
-	nextIndex := rf.getMaxLogIndex()
+	_, nextIndex := rf.getMaxLog()
 	for i, _ := range rf.peers {
-		rf.nextIndex[i] = nextIndex
+		rf.nextIndex[i] = nextIndex + 1
 		rf.matchIndex[i] = -1
 	}
 	rf.startLeaderLoop()
