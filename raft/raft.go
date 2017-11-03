@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -184,13 +183,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	fmt.Println("-args.term: ", args.Term, " args.Server: ", args.ServerIndex, " term: ", rf.term, " server: ", rf.me)
+	//	fmt.Println("-args.term: ", args.Term, " args.Server: ", args.ServerIndex, " term: ", rf.term, " server: ", rf.me)
 	rf.mu.Lock()
 	defer func() {
 		rf.mu.Unlock()
 		rf.timerChan <- reply.Result
 	}()
-	fmt.Println("---args.term: ", args.Term, " args.Server: ", args.ServerIndex, " term: ", rf.term, " server: ", rf.me)
 	num := len(rf.entries)
 	maxLogIndex := -1
 	maxLogTerm := -1
@@ -342,10 +340,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) startFollower() {
-	fmt.Println("startFollow1 ---- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Println("startFollow2 -----", rf.me)
 	rf.role = FOLLOWER
 	rf.startFollowerLoop()
 }
@@ -386,10 +382,8 @@ func (rf *Raft) startFollowerLoop() {
 }
 
 func (rf *Raft) startElection() {
-	fmt.Println("startElec1 ----- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Println("startElec2 ----- ", rf.me)
 	rf.term += 1
 	rf.role = CANDIDATE
 	rf.votedFor = rf.me
@@ -515,10 +509,8 @@ func (rf *Raft) startElectionLoop(voteChan <-chan int) {
 }
 
 func (rf *Raft) startLeader() {
-	fmt.Println("startLeader1 ----- ", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Println("startLeader2 ----- ", rf.me)
 	rf.role = LEADER
 	nextIndex := rf.getMaxLogIndex()
 	for i, _ := range rf.peers {
