@@ -335,19 +335,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.term
 	if rf.role == LEADER {
 		isLeader = true
-		for _, entry := range rf.entries {
-			if entry.Cmd == command {
-				index = entry.Index
-				term = entry.Term
-				break
-			}
-		}
-		if index == len(rf.entries) {
-			entry := LogEntry{Term: term, Index: index, Cmd: command}
-			rf.entries = append(rf.entries, entry)
-			rf.matchIndex[rf.me] = index
-			rf.nextIndex[rf.me] = index + 1
-		}
+		//		for _, entry := range rf.entries {
+		//			if entry.Cmd == command {
+		//				index = entry.Index
+		//				term = entry.Term
+		//				break
+		//			}
+		//		}
+		//		if index == len(rf.entries) {
+		entry := LogEntry{Term: term, Index: index, Cmd: command}
+		rf.entries = append(rf.entries, entry)
+		rf.matchIndex[rf.me] = index
+		rf.nextIndex[rf.me] = index + 1
+		//		}
 	} else {
 		isLeader = false
 	}
