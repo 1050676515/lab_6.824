@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"labrpc"
 	"math/rand"
 	"sort"
@@ -51,6 +53,8 @@ type LogEntry struct {
 	Term  int
 	Index int
 	Cmd   interface{}
+	Type  int // 0 internal | 1 command
+	AppId int
 }
 
 //
@@ -75,6 +79,7 @@ type Raft struct {
 	entries     []LogEntry // logs
 	commitIndex int        // 已知被提交的最大日志条目索引
 	lastApplied int        // 已知被状态机执行的最大日志条目索引
+	logAppId    int
 
 	// only for leader
 	nextIndex  []int
@@ -113,6 +118,15 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.commitIndex)
+	e.Encode(rf.lastApplied)
+	e.Encode(rf.term)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.entries)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -128,6 +142,13 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.commitIndex)
+	d.Decode(&rf.lastApplied)
+	d.Decode(&rf.term)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.entries)
 }
 
 //
@@ -166,16 +187,9 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) checkLogConsistency(prevTerm, prevIndex int) bool {
 	maxLogTerm, maxLogIndex := rf.getMaxLog()
-	if maxLogTerm == 0 && maxLogIndex == 0 {
+	if maxLogTerm >= prevTerm && maxLogIndex >= prevIndex && rf.entries[prevIndex].Term == prevTerm && rf.entries[prevIndex].Index == prevIndex {
+		rf.entries = rf.entries[:prevIndex+1]
 		return true
-	} else if prevTerm == 0 && prevIndex == 0 {
-		rf.entries = rf.entries[0:1]
-		return true
-	} else {
-		if maxLogIndex >= prevIndex && rf.entries[prevIndex].Term == prevTerm && rf.entries[prevIndex].Index == prevIndex {
-			rf.entries = rf.entries[:prevIndex+1]
-			return true
-		}
 	}
 	return false
 }
@@ -202,30 +216,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if rf.checkLogConsistency(args.PrevLogTerm, args.PrevLogIndex) {
 			rf.entries = append(rf.entries, args.Logs...)
 			for oldCommitIndex := rf.commitIndex + 1; oldCommitIndex <= args.LeaderCommit; oldCommitIndex++ {
-				rf.applyCh <- ApplyMsg{Index: rf.entries[oldCommitIndex].Index, Command: rf.entries[oldCommitIndex].Cmd}
+				if rf.entries[oldCommitIndex].Type == 1 {
+					rf.applyCh <- ApplyMsg{Index: rf.entries[oldCommitIndex].AppId, Command: rf.entries[oldCommitIndex].Cmd}
+				}
 				rf.commitIndex += 1
+				rf.lastApplied += 1
 			}
 			reply.Success = true
 		} else {
 			reply.Success = false
 		}
-		//	} else if args.Term == rf.term {
-		//		result = true
-		//		rf.leader = args.LeaderId
-		//		if rf.checkLogConsistency(args.PrevLogTerm, args.PrevLogIndex) {
-		//			rf.entries = append(rf.entries, args.Logs...)
-		//			for oldCommitIndex := rf.commitIndex + 1; oldCommitIndex <= args.LeaderCommit; oldCommitIndex++ {
-		//				rf.applyCh <- ApplyMsg{Index: rf.entries[oldCommitIndex].Index, Command: rf.entries[oldCommitIndex].Cmd}
-		//				rf.commitIndex += 1
-		//			}
-		//			reply.Success = true
-		//		} else {
-		//			reply.Success = false
-		//		}
+		rf.persist()
 	} else {
 		reply.Success = false
 		result = false
 	}
+	//	fmt.Println("server: ", rf.me, " logs: ", rf.entries, " commitIndex: ", rf.commitIndex, " term: ", rf.term, " args.PrevLogIndex: ", args.PrevLogIndex)
+	//	fmt.Println("server: ", rf.me, " args.PrevLogIndex: ", args.PrevLogIndex, " lastApplied: ", rf.lastApplied, " logs: ", rf.entries)
 }
 
 //
@@ -240,6 +247,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}()
 	maxLogTerm, maxLogIndex := rf.getMaxLog()
 
+	//	fmt.Println("server: ", rf.me, " maxLogTerm: ", maxLogTerm, " maxLogIndex: ", maxLogIndex, " term: ", rf.term, " args.Server: ", args.ServerIndex, " args.Term: ", args.Term, " args.LastLogTerm: ", args.LastLogTerm, " args.LastLogIndex: ", args.LastLogIndex)
 	if args.Term > rf.term {
 		// term增加后，必须重置role为FOLLOWER
 		rf.term = args.Term
@@ -268,6 +276,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		reply.Result = false
 	}
+	rf.persist()
 }
 
 //
@@ -332,26 +341,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 
 	index = len(rf.entries)
+	appId := rf.getMaxAppId() + 1
 	term = rf.term
 	if rf.role == LEADER {
 		isLeader = true
-		//		for _, entry := range rf.entries {
-		//			if entry.Cmd == command {
-		//				index = entry.Index
-		//				term = entry.Term
-		//				break
-		//			}
-		//		}
-		//		if index == len(rf.entries) {
-		entry := LogEntry{Term: term, Index: index, Cmd: command}
+		entry := LogEntry{Term: term, Index: index, Cmd: command, AppId: appId, Type: 1}
 		rf.entries = append(rf.entries, entry)
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me] = index + 1
-		//		}
+		rf.persist()
 	} else {
 		isLeader = false
 	}
-	return index, term, isLeader
+	return appId, term, isLeader
+}
+
+func (rf *Raft) getMaxAppId() int {
+	for i := len(rf.entries) - 1; i >= 0; i-- {
+		if rf.entries[i].Type == 1 {
+			return rf.entries[i].AppId
+		}
+	}
+
+	return 0
 }
 
 //
@@ -391,7 +403,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leader = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.entries = append(rf.entries, LogEntry{Term: 0, Index: 0})
+	rf.entries = append(rf.entries, LogEntry{Term: 0, Index: 0, Cmd: 0, Type: 0})
 	rf.timerChan = make(chan bool)
 	rf.exitChan = make(chan bool)
 	rf.applyCh = applyCh
@@ -463,6 +475,7 @@ func (rf *Raft) startElection() {
 	rf.role = CANDIDATE
 	rf.leader = -1
 	rf.votedFor = rf.me
+	rf.persist()
 	// send RequestVoteRPC
 	args := new(RequestVoteArgs)
 	args.Term = rf.term
@@ -590,6 +603,11 @@ func (rf *Raft) startLeader() {
 	rf.role = LEADER
 	rf.leader = rf.me
 	_, maxIndex := rf.getMaxLog()
+	maxIndex += 1
+	// Raft 中通过领导人在任期开始的时候提交一个空白的没有任何操作的日志条目到日志中去来进行实现
+	entry := LogEntry{Term: rf.term, Index: maxIndex, Cmd: 0, Type: 0}
+	rf.entries = append(rf.entries, entry)
+
 	for i, _ := range rf.peers {
 		rf.nextIndex[i] = maxIndex + 1
 		rf.matchIndex[i] = 0
@@ -631,10 +649,22 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	minMatch := rf.getMinMatchIndex()
-	for oldCommitIndex := rf.commitIndex + 1; oldCommitIndex <= minMatch; oldCommitIndex++ {
-		rf.applyCh <- ApplyMsg{Index: rf.entries[oldCommitIndex].Index, Command: rf.entries[oldCommitIndex].Cmd}
-		rf.commitIndex += 1
+	// S1在时序(c)的任期term4提交term2的旧日志时，旧日志必须附带在当前term 4的日志下一起提交
+	/*
+		Raft never commits log entries from previous terms by counting replicas. Only log entries from the leader's current term are committed by counting replicas; once an entry from the current term has been committed in this way, then all prior entries are committed indirectly because of the Log Matching Property.
+	*/
+	if rf.entries[minMatch].Term == rf.term {
+		for oldCommitIndex := rf.commitIndex + 1; oldCommitIndex <= minMatch; oldCommitIndex++ {
+			if rf.entries[oldCommitIndex].Type == 1 {
+				rf.applyCh <- ApplyMsg{Index: rf.entries[oldCommitIndex].AppId, Command: rf.entries[oldCommitIndex].Cmd}
+			}
+			rf.commitIndex += 1
+			rf.lastApplied += 1
+		}
+		rf.persist()
 	}
+	//	fmt.Println("leader: ", rf.me, " logs: ", rf.entries, " commitIndex: ", rf.commitIndex, " term: ", rf.term)
+	//	fmt.Println("leader: ", rf.me, " commitIndex: ", rf.commitIndex, " term: ", rf.term, " lastApplied: ", rf.lastApplied, " logs: ", rf.entries)
 
 	for i, _ := range rf.peers {
 		if i != rf.me {
@@ -664,8 +694,8 @@ func (rf *Raft) sendHeartBeat() {
 					rf.mu.Unlock()
 				} else {
 					rf.mu.Lock()
-					if args.PrevLogIndex > 1 {
-						rf.nextIndex[index] = args.PrevLogIndex - 1
+					if rf.nextIndex[index] > 1 {
+						rf.nextIndex[index] = rf.nextIndex[index] / 2
 					} else {
 						rf.nextIndex[index] = 1
 					}
